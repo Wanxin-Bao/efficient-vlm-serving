@@ -1,0 +1,29 @@
+=== Date ===
+Mon 28 Sep 2026 12:30:04 AM JST
+
+=== OS ===
+Distributor ID:	Pop
+Description:	Pop!_OS 20.04 LTS
+Release:	20.04
+Codename:	focal
+
+=== GPU ===
+name, memory.total [MiB], driver_version
+NVIDIA GeForce RTX 3090, 24576 MiB, 550.54.15
+
+=== Python ===
+Python 3.12.14
+
+=== PyTorch / CUDA ===
+PyTorch: 2.13.0+cu129
+PyTorch CUDA: 12.9
+CUDA available: True
+GPU: NVIDIA GeForce RTX 3090
+vLLM: 0.30.0+cu129
+
+=== System CUDA Toolkit ===
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2022 NVIDIA Corporation
+Built on Wed_Sep_21_10:33:58_PDT_2022
+Cuda compilation tools, release 11.8, V11.8.89
+Build cuda_11.8.r11.8/compiler.31833905_0

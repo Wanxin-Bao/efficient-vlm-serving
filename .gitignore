@@ -1,0 +1,25 @@
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# Cache
+.cache/
+huggingface/
+
+# Logs
+logs/
+*.log
+
+# Benchmark raw results
+results/raw/*
+!results/raw/.gitkeep
