@@ -23,3 +23,6 @@ logs/
 # Benchmark raw results
 results/raw/*
 !results/raw/.gitkeep
+# Generated Day 2 benchmark dataset
+assets/bench_images/
+assets/day2_benchmark.jsonl
