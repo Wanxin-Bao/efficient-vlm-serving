@@ -3,6 +3,48 @@
 A deployment-oriented benchmark project for vision-language models
 using vLLM, SGLang, quantization, and multimodal evaluation.
 
+## Project Highlights
+
+This project studies efficient serving of Qwen2.5-VL-3B-Instruct on a single
+RTX 3090, focusing on concurrency scaling, serving backend choice, and
+quantization.
+
+### Key Results
+
+- **vLLM concurrency scaling:** output throughput increased from
+  **98.9 to 640.2 tokens/s** when concurrency increased from 1 to 16.
+
+- **vLLM vs SGLang:** both backends showed similar single-request decode
+  performance, but vLLM scaled more effectively under higher concurrency in
+  the tested multimodal workload.
+
+- **At concurrency 16:** vLLM achieved **640.2 tokens/s** compared with
+  **460.7 tokens/s** for SGLang, while also providing lower median TTFT.
+
+- **AWQ quantization:** at concurrency 8, output throughput increased from
+  **452.3 to 700.4 tokens/s**, while TPOT decreased from
+  **12.16 to 5.91 ms/token**.
+
+- **Quality sanity check:** a 100-sample MME subset showed no obvious
+  multimodal quality collapse after AWQ quantization.
+
+### What This Project Covers
+
+```text
+Qwen2.5-VL-3B-Instruct
+        │
+        ├── vLLM serving
+        │     └── concurrency scaling
+        │
+        ├── SGLang serving
+        │     └── backend comparison
+        │
+        └── AWQ INT4
+              ├── latency / throughput
+              └── multimodal quality check
+```
+
+
 ## Baseline Model
 
 - Qwen/Qwen2.5-VL-3B-Instruct
@@ -1328,3 +1370,121 @@ throughput while maintaining functional multimodal inference.
 The strongest improvement appears in TPOT rather than TTFT, highlighting the
 importance of separating first-token latency from steady-state decode
 performance when evaluating quantized serving systems.
+
+
+## Day 6 — Multimodal Quality Sanity Check
+
+### Objective
+
+The serving experiments in Day 5 showed that AWQ significantly improves
+decode performance for Qwen2.5-VL-3B-Instruct.
+
+The final question is whether this performance improvement introduces an
+obvious degradation in multimodal model quality.
+
+To check this, BF16 and AWQ are evaluated on the same subset of MME using
+LMMs-Eval.
+
+This experiment is intentionally lightweight and should be interpreted as a
+quality sanity check rather than a full benchmark.
+
+---
+
+### Evaluation Setup
+
+| Configuration | BF16 | AWQ |
+|---|---|---|
+| Model family | Qwen2.5-VL-3B | Qwen2.5-VL-3B |
+| Serving backend | vLLM | vLLM |
+| Evaluation framework | LMMs-Eval 0.7.3 | LMMs-Eval 0.7.3 |
+| Benchmark | MME | MME |
+| Samples | 100 | 100 |
+| Temperature | 0 | 0 |
+| API | OpenAI-compatible | OpenAI-compatible |
+| GPU | RTX 3090 | RTX 3090 |
+
+The same first 100 MME samples are used for both models.
+
+Because the evaluation uses `--limit 100`, these scores should not be compared
+with published full-MME results.
+
+---
+
+### Results
+
+| Metric | BF16 | AWQ | Difference |
+|---|---:|---:|---:|
+| MME Cognition | 155.00 | 152.50 | -2.50 |
+| MME Perception | 123.33 | 128.33 | +5.00 |
+
+The two model variants remain close on the evaluated subset.
+
+AWQ produces a slightly lower cognition score and a slightly higher perception
+score, but the limited sample size is not sufficient to interpret either
+difference as a meaningful quality improvement or regression.
+
+The important observation is that no obvious multimodal quality collapse is
+observed after quantization.
+
+---
+
+### Performance–Quality Trade-off
+
+The quality results can be viewed together with the serving benchmark from
+Day 5.
+
+At concurrency 8:
+
+| Metric | BF16 | AWQ |
+|---|---:|---:|
+| Output throughput | 452.33 tok/s | 700.41 tok/s |
+| TPOT | 12.16 ms/token | 5.91 ms/token |
+| Mean E2E | 2262.0 ms | 1460.9 ms |
+| MME Cognition (100 samples) | 155.00 | 152.50 |
+| MME Perception (100 samples) | 123.33 | 128.33 |
+
+AWQ therefore provides a substantial serving-performance improvement while
+maintaining broadly similar multimodal quality on this limited evaluation
+subset.
+
+The strongest performance gain appears in autoregressive decoding:
+
+- output throughput increases by approximately 55%
+- TPOT decreases by approximately 51%
+- mean E2E latency decreases by approximately 35%
+
+At the same time, the small MME sanity check does not show a clear degradation
+in visual-language capability.
+
+---
+
+### Limitations
+
+This evaluation is intentionally lightweight.
+
+Only 100 MME samples are evaluated, so the results are not representative of
+the complete benchmark and should not be used for leaderboard comparison.
+
+The subset also does not provide enough statistical evidence to conclude that
+small score differences between BF16 and AWQ are significant.
+
+A more comprehensive evaluation could include the full MME benchmark and
+additional multimodal datasets such as MMMU, MMBench, or MathVista.
+
+For this project, the limited evaluation is used only to verify that the
+performance gains from quantization are not accompanied by an obvious
+functional quality regression.
+
+---
+
+### Day 6 Summary
+
+The final experiment connects serving optimization with model quality.
+
+The AWQ checkpoint substantially improves decode throughput and end-to-end
+latency on the tested RTX 3090 setup, while a 100-sample MME sanity check shows
+broadly similar multimodal performance to the BF16 baseline.
+
+Together with the backend comparison from Day 4, this completes the project's
+evaluation of serving backend choice, concurrency scaling, quantization, and
+performance-quality trade-offs.

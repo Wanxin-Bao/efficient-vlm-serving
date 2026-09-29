@@ -1,0 +1,3 @@
+precision,samples,mme_cognition_score,mme_perception_score
+BF16,100,155.0000,123.3333
+AWQ,100,152.5000,128.3333

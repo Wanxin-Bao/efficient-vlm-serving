@@ -26,3 +26,5 @@ results/raw/*
 # Generated Day 2 benchmark dataset
 assets/bench_images/
 assets/day2_benchmark.jsonl
+# LMMs-Eval raw outputs
+results/quality/
