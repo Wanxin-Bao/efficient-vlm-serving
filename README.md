@@ -436,3 +436,486 @@ latency.
 
 The results establish a BF16 vLLM baseline that will be used for subsequent
 backend and optimization comparisons.
+
+
+## Day 3 — SGLang Multimodal Serving Baseline
+
+### Objective
+
+The goal of Day 3 is to deploy the same vision-language model used in the
+vLLM baseline with SGLang and verify multimodal inference through an
+OpenAI-compatible API.
+
+This establishes a second serving backend for the later controlled comparison.
+
+---
+
+### Environment
+
+#### Model
+
+- Qwen/Qwen2.5-VL-3B-Instruct
+- Precision: BF16
+- Serving backend: SGLang
+- OpenAI-compatible chat completion API
+
+#### Hardware
+
+- NVIDIA GeForce RTX 3090
+- 24 GB VRAM
+- CUDA Toolkit 12.9
+
+#### SGLang Environment
+
+- SGLang 0.5.10.post1
+- PyTorch 2.9.1+cu128
+- Python 3.12
+- GCC/G++ 10 for JIT CUDA kernel compilation
+
+SGLang's JIT kernels require C++20 support. The host operating system defaults
+to GCC 9, which failed to compile kernels using the `<concepts>` header.
+
+The SGLang environment therefore explicitly uses GCC/G++ 10:
+
+```bash
+export CC=/usr/bin/gcc-10
+export CXX=/usr/bin/g++-10
+export CUDAHOSTCXX=/usr/bin/g++-10
+export NVCC_CCBIN=/usr/bin/g++-10
+```
+
+These settings are isolated to the SGLang project environment and do not
+modify the system-wide compiler configuration.
+
+---
+
+### Server Configuration
+
+The SGLang server is launched with:
+
+```bash
+python -m sglang.launch_server \
+    --model-path Qwen/Qwen2.5-VL-3B-Instruct \
+    --host 127.0.0.1 \
+    --port 30000 \
+    --dtype bfloat16 \
+    --context-length 4096 \
+    --mem-fraction-static 0.80 \
+    --disable-radix-cache
+```
+
+Radix cache is disabled so that repeated benchmark prompts do not benefit from
+prefix reuse.
+
+---
+
+### Multimodal Smoke Test
+
+A multimodal request containing a local image and text prompt was sent through
+the OpenAI-compatible `/v1/chat/completions` endpoint.
+
+The model successfully generated a correct description of the image,
+confirming the complete serving path:
+
+```text
+image + text
+    ↓
+SGLang
+    ↓
+Qwen2.5-VL-3B-Instruct
+    ↓
+OpenAI-compatible API
+    ↓
+text response
+```
+
+This establishes the SGLang BF16 deployment baseline used in Day 4.
+
+---
+
+## Day 4 — vLLM vs SGLang Serving Comparison
+
+### Objective
+
+The goal of Day 4 is to compare the concurrency scaling behavior of vLLM and
+SGLang under the same multimodal serving workload.
+
+Rather than using each framework's native benchmark utility independently,
+both backends are evaluated using the same benchmark client and the same
+request dataset.
+
+This reduces client-side and workload differences and makes the comparison
+more controlled.
+
+---
+
+### Experimental Methodology
+
+The following properties are kept consistent between the two benchmark runs:
+
+| Configuration | vLLM | SGLang |
+|---|---|---|
+| Model | Qwen2.5-VL-3B-Instruct | Qwen2.5-VL-3B-Instruct |
+| Precision | BF16 | BF16 |
+| GPU | RTX 3090 | RTX 3090 |
+| Input images | Same dataset | Same dataset |
+| Image resolution | 640 × 640 | 640 × 640 |
+| Images per request | 1 | 1 |
+| Measured requests | 128 | 128 |
+| Output length | 128 tokens | 128 tokens |
+| Temperature | 0 | 0 |
+| EOS handling | Ignored | Ignored |
+| Request rate | Unlimited | Unlimited |
+| Concurrency | 1, 4, 8, 16 | 1, 4, 8, 16 |
+| Prefix caching | Disabled | Disabled |
+| Benchmark client | `vllm bench serve` | `vllm bench serve` |
+
+The serving frameworks use their respective software stacks and memory
+management implementations, so this experiment should be interpreted as an
+end-to-end serving comparison rather than a kernel-level comparison.
+
+---
+
+### Benchmark Results
+
+| Concurrency | vLLM Output Throughput (tok/s) | SGLang Output Throughput (tok/s) | vLLM TTFT P50 (ms) | SGLang TTFT P50 (ms) | vLLM TPOT (ms/token) | SGLang TPOT (ms/token) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1  | 98.92  | 96.53  | 165.7  | 232.5  | 8.94  | 8.68 |
+| 4  | 279.61 | 242.47 | 507.7  | 838.1  | 11.05 | 10.64 |
+| 8  | 452.33 | 355.71 | 644.0  | 1450.4 | 12.16 | 11.73 |
+| 16 | 640.20 | 460.70 | 1184.0 | 2240.8 | 15.81 | 16.61 |
+
+Both serving backends completed all 128 requests successfully at every tested
+concurrency level.
+
+---
+
+### Full Latency and Memory Comparison
+
+| C | Backend | Req/s | Output tok/s | TTFT P50 (ms) | TTFT P95 (ms) | Mean TPOT (ms/token) | Mean E2E (ms) | Peak VRAM (MiB) |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | vLLM | 0.77 | 98.92 | 165.7 | 171.2 | 8.94 | 1293.3 | 18111 |
+| 1 | SGLang | 0.75 | 96.53 | 232.5 | 234.1 | 8.68 | 1325.8 | 20790 |
+| 4 | vLLM | 2.18 | 279.61 | 507.7 | 517.9 | 11.05 | 1828.7 | 18111 |
+| 4 | SGLang | 1.89 | 242.47 | 838.1 | 844.4 | 10.64 | 2110.5 | 20898 |
+| 8 | vLLM | 3.53 | 452.33 | 644.0 | 951.6 | 12.16 | 2262.0 | 18111 |
+| 8 | SGLang | 2.78 | 355.71 | 1450.4 | 1618.4 | 11.73 | 2876.4 | 21006 |
+| 16 | vLLM | 5.00 | 640.20 | 1184.0 | 1782.0 | 15.81 | 3194.7 | 18167 |
+| 16 | SGLang | 3.60 | 460.70 | 2240.8 | 3191.1 | 16.61 | 4441.4 | 21036 |
+
+---
+
+### Backend Comparison Figures
+
+#### Output Throughput
+
+![vLLM vs SGLang Throughput](results/figures/backend_comparison/throughput.png)
+
+#### Median Time to First Token
+
+![vLLM vs SGLang TTFT P50](results/figures/backend_comparison/ttft_p50.png)
+
+#### P95 Time to First Token
+
+![vLLM vs SGLang TTFT P95](results/figures/backend_comparison/ttft_p95.png)
+
+#### Time per Output Token
+
+![vLLM vs SGLang TPOT](results/figures/backend_comparison/tpot.png)
+
+#### End-to-End Latency
+
+![vLLM vs SGLang E2E](results/figures/backend_comparison/e2e.png)
+
+#### Peak GPU Memory
+
+![vLLM vs SGLang VRAM](results/figures/backend_comparison/vram.png)
+
+#### Throughput–Latency Trade-off
+
+![vLLM vs SGLang Throughput-Latency Trade-off](results/figures/backend_comparison/throughput_latency_tradeoff.png)
+
+---
+
+### Analysis
+
+#### 1. Single-Request Performance Is Similar
+
+At concurrency 1, the two serving backends achieve very similar output
+throughput:
+
+```text
+vLLM:    98.92 tokens/s
+SGLang:  96.53 tokens/s
+```
+
+Their TPOT values are also very close:
+
+```text
+vLLM:    8.94 ms/token
+SGLang:  8.68 ms/token
+```
+
+This suggests that the two backends have broadly comparable steady-state
+decode performance for a single active request in this workload.
+
+The more noticeable difference at concurrency 1 is TTFT:
+
+```text
+vLLM:    165.7 ms
+SGLang:  232.5 ms
+```
+
+---
+
+#### 2. The Throughput Gap Increases with Concurrency
+
+The serving behavior begins to diverge as request concurrency increases.
+
+At concurrency 4:
+
+```text
+vLLM:    279.61 tokens/s
+SGLang:  242.47 tokens/s
+```
+
+At concurrency 8:
+
+```text
+vLLM:    452.33 tokens/s
+SGLang:  355.71 tokens/s
+```
+
+At concurrency 16:
+
+```text
+vLLM:    640.20 tokens/s
+SGLang:  460.70 tokens/s
+```
+
+The results therefore indicate that, for this particular multimodal workload,
+vLLM scales more effectively as the number of simultaneous requests
+increases.
+
+This observation is workload- and hardware-specific and should not be
+interpreted as a universal ranking of the two serving frameworks.
+
+---
+
+#### 3. The Largest Difference Appears in TTFT
+
+The difference between the two systems is substantially larger for TTFT than
+for TPOT.
+
+At concurrency 8:
+
+```text
+TTFT P50
+vLLM:     644.0 ms
+SGLang:  1450.4 ms
+
+TPOT
+vLLM:     12.16 ms/token
+SGLang:   11.73 ms/token
+```
+
+At concurrency 16:
+
+```text
+TTFT P50
+vLLM:    1184.0 ms
+SGLang:  2240.8 ms
+
+TPOT
+vLLM:     15.81 ms/token
+SGLang:   16.61 ms/token
+```
+
+Steady-state token generation latency remains relatively similar between the
+two systems, while first-token latency diverges substantially at higher
+concurrency.
+
+This suggests that the observed serving gap is concentrated more heavily in
+the first-token / high-concurrency path than in autoregressive decode alone.
+
+Possible contributors include request scheduling, multimodal preprocessing,
+vision encoding, prefill batching, or backend-specific execution behavior.
+Identifying the exact cause would require lower-level profiling and is outside
+the scope of this benchmark.
+
+---
+
+#### 4. End-to-End Latency Reflects the TTFT Difference
+
+The TTFT gap directly affects total request latency.
+
+At concurrency 16:
+
+```text
+Mean E2E
+
+vLLM:    3194.7 ms
+SGLang:  4441.4 ms
+```
+
+Because both systems produce 128 output tokens per request, the relatively
+similar TPOT values cannot fully explain this difference.
+
+The larger first-token delay therefore contributes substantially to SGLang's
+higher end-to-end latency in this experiment.
+
+---
+
+#### 5. GPU Memory Behavior Differs Between Backends
+
+Peak GPU memory usage also differs consistently:
+
+```text
+Concurrency 1
+
+vLLM:    18111 MiB
+SGLang:  20790 MiB
+```
+
+and:
+
+```text
+Concurrency 16
+
+vLLM:    18167 MiB
+SGLang:  21036 MiB
+```
+
+The difference should not be interpreted simply as model-weight overhead.
+
+Both serving frameworks independently manage:
+
+- KV cache allocation
+- memory pools
+- CUDA graphs
+- runtime workspaces
+- multimodal model components
+
+Therefore, these numbers represent the peak GPU memory footprint of the tested
+serving configurations rather than an intrinsic memory requirement of each
+framework.
+
+---
+
+#### 6. GPU Utilization Alone Does Not Explain Throughput
+
+Both systems frequently report high active-sample GPU utilization.
+
+However, as observed in Day 2, `nvidia-smi` utilization primarily indicates
+whether kernels are active during a sampling interval and does not directly
+measure GPU computational efficiency.
+
+High reported utilization therefore does not imply equal:
+
+- SM occupancy
+- Tensor Core utilization
+- memory bandwidth utilization
+- achieved FLOPS
+- batching efficiency
+
+The serving throughput measurements provide a more useful end-to-end metric
+for this experiment.
+
+---
+
+### Key Findings
+
+1. **vLLM and SGLang provide similar single-request decode performance.**
+
+   At concurrency 1, output throughput and TPOT are very close between the two
+   systems.
+
+2. **Their scaling behavior diverges as concurrency increases.**
+
+   vLLM achieves progressively higher aggregate throughput relative to SGLang
+   at concurrency 4, 8, and 16.
+
+3. **TTFT is the largest observed latency difference.**
+
+   SGLang's median TTFT grows substantially faster than vLLM's under higher
+   concurrency.
+
+4. **TPOT remains comparatively similar.**
+
+   The smaller TPOT difference suggests that steady-state autoregressive decode
+   is not the primary source of the overall serving gap.
+
+5. **vLLM achieves lower end-to-end latency at higher concurrency in this
+   workload.**
+
+   The first-token latency difference contributes substantially to the total
+   request latency difference.
+
+6. **The tested SGLang configuration has a larger peak GPU memory footprint.**
+
+   This reflects framework-specific memory management and cache allocation and
+   should not be generalized beyond the tested configuration.
+
+7. **Both backends are stable under the tested workload.**
+
+   All 128 requests completed successfully at every tested concurrency level.
+
+---
+
+### Reproducing the SGLang Benchmark
+
+Activate the benchmark client environment:
+
+```bash
+source .venv-vllm/bin/activate
+source scripts/use_cuda_12_9.sh
+```
+
+Run the SGLang concurrency benchmark:
+
+```bash
+./scripts/run_sglang_concurrency_benchmark.sh
+```
+
+Aggregate the results:
+
+```bash
+python src/aggregate_sglang_results.py
+```
+
+Generate backend comparison figures:
+
+```bash
+python src/plot_backend_comparison.py
+```
+
+Processed results are stored in:
+
+```text
+results/processed/
+├── vllm_bf16_concurrency_final.csv
+└── sglang_bf16_concurrency_final.csv
+```
+
+Comparison figures are stored in:
+
+```text
+results/figures/backend_comparison/
+```
+
+---
+
+### Day 4 Summary
+
+The controlled backend comparison shows that vLLM and SGLang have similar
+single-request decode performance for Qwen2.5-VL-3B-Instruct, but their serving
+behavior diverges under increasing concurrency.
+
+In the tested RTX 3090 BF16 multimodal workload, vLLM maintains lower TTFT and
+higher aggregate throughput as concurrency increases, while TPOT remains
+relatively similar between the two systems.
+
+The results demonstrate why evaluating an inference backend requires more than
+a single tokens-per-second measurement: request scheduling, first-token
+latency, batching behavior, end-to-end latency, and GPU memory footprint all
+contribute to practical serving performance.
