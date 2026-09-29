@@ -919,3 +919,412 @@ The results demonstrate why evaluating an inference backend requires more than
 a single tokens-per-second measurement: request scheduling, first-token
 latency, batching behavior, end-to-end latency, and GPU memory footprint all
 contribute to practical serving performance.
+
+
+## Day 5 — BF16 vs AWQ INT4 Quantization
+
+### Objective
+
+The goal of Day 5 is to evaluate how AWQ 4-bit weight quantization affects
+multimodal serving performance compared with the BF16 baseline.
+
+The experiment focuses on the trade-off between:
+
+- output throughput
+- time to first token
+- decode latency
+- end-to-end latency
+- GPU memory usage
+- output quality
+
+The serving backend is kept fixed to vLLM so that the primary experimental
+variable is model precision.
+
+---
+
+### Models
+
+#### BF16 Baseline
+
+```text
+Qwen/Qwen2.5-VL-3B-Instruct
+```
+
+#### AWQ Quantized Model
+
+```text
+Qwen/Qwen2.5-VL-3B-Instruct-AWQ
+```
+
+The AWQ checkpoint uses 4-bit weight quantization for supported language-model
+layers while keeping the multimodal model functional through the same
+OpenAI-compatible serving interface.
+
+A multimodal smoke test using the same local image as the BF16 baseline
+produced a correct image description, confirming that the quantized model
+remains functional for vision-language inference.
+
+---
+
+### Experimental Setup
+
+The benchmark reuses the controlled serving workload established in Day 2.
+
+| Configuration | BF16 | AWQ |
+|---|---|---|
+| Backend | vLLM | vLLM |
+| GPU | RTX 3090 | RTX 3090 |
+| Model family | Qwen2.5-VL-3B | Qwen2.5-VL-3B |
+| Image resolution | 640 × 640 | 640 × 640 |
+| Images per request | 1 | 1 |
+| Measured requests | 128 | 128 |
+| Output length | 128 tokens | 128 tokens |
+| Temperature | 0 | 0 |
+| Prefix caching | Disabled | Disabled |
+| GPU memory utilization target | 0.80 | 0.80 |
+| Concurrency | 1, 8, 16 | 1, 8, 16 |
+
+Concurrency 1 represents single-request latency, concurrency 8 corresponds to
+the throughput-latency knee observed in the BF16 experiment, and concurrency
+16 represents the high-concurrency regime.
+
+---
+
+### Results
+
+| C | Precision | Output Throughput (tok/s) | TTFT P50 (ms) | TTFT P95 (ms) | Mean TPOT (ms/token) | Mean E2E (ms) | Peak VRAM (MiB) |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | BF16 | 98.92 | 165.7 | 171.2 | 8.94 | 1293.3 | 18111 |
+| 1 | AWQ | 187.03 | 150.8 | 164.9 | 4.23 | 684.1 | 17968 |
+| 8 | BF16 | 452.33 | 644.0 | 951.6 | 12.16 | 2262.0 | 18111 |
+| 8 | AWQ | 700.41 | 659.9 | 922.1 | 5.91 | 1460.9 | 18207 |
+| 16 | BF16 | 640.20 | 1184.0 | 1782.0 | 15.81 | 3194.7 | 18167 |
+| 16 | AWQ | 845.74 | 1067.1 | 1785.0 | 9.67 | 2418.7 | 18207 |
+
+All benchmark requests completed successfully.
+
+---
+
+### Quantization Comparison Figures
+
+#### Output Throughput
+
+![BF16 vs AWQ Throughput](results/figures/quantization_comparison/throughput.png)
+
+#### Time to First Token
+
+![BF16 vs AWQ TTFT](results/figures/quantization_comparison/ttft.png)
+
+#### Time per Output Token
+
+![BF16 vs AWQ TPOT](results/figures/quantization_comparison/tpot.png)
+
+#### End-to-End Latency
+
+![BF16 vs AWQ E2E](results/figures/quantization_comparison/e2e.png)
+
+#### Peak GPU Memory
+
+![BF16 vs AWQ VRAM](results/figures/quantization_comparison/vram.png)
+
+#### Throughput–Latency Trade-off
+
+![BF16 vs AWQ Throughput-Latency Trade-off](results/figures/quantization_comparison/throughput_latency_tradeoff.png)
+
+---
+
+### Analysis
+
+#### 1. AWQ Substantially Improves Decode Throughput
+
+The largest performance difference appears in output token generation.
+
+At concurrency 1:
+
+```text
+BF16:  98.92 tokens/s
+AWQ:  187.03 tokens/s
+```
+
+This corresponds to approximately an **89% increase** in output throughput.
+
+At concurrency 8:
+
+```text
+BF16:  452.33 tokens/s
+AWQ:   700.41 tokens/s
+```
+
+The throughput improvement is approximately **55%**.
+
+At concurrency 16:
+
+```text
+BF16:  640.20 tokens/s
+AWQ:   845.74 tokens/s
+```
+
+The throughput improvement remains approximately **32%** under high
+concurrency.
+
+The relative performance gain decreases as concurrency increases, but AWQ
+remains faster than the BF16 baseline at every tested operating point.
+
+---
+
+#### 2. TPOT Shows the Clearest Quantization Benefit
+
+The most consistent improvement appears in Time per Output Token.
+
+```text
+Concurrency 1
+BF16:  8.94 ms/token
+AWQ:   4.23 ms/token
+
+Concurrency 8
+BF16: 12.16 ms/token
+AWQ:   5.91 ms/token
+
+Concurrency 16
+BF16: 15.81 ms/token
+AWQ:   9.67 ms/token
+```
+
+Compared with BF16, AWQ reduces TPOT by approximately:
+
+- **53%** at concurrency 1
+- **51%** at concurrency 8
+- **39%** at concurrency 16
+
+This indicates that the primary performance benefit of AWQ in this experiment
+appears in the autoregressive decode path.
+
+---
+
+#### 3. TTFT Changes Much Less Than TPOT
+
+TTFT remains relatively similar between BF16 and AWQ.
+
+At concurrency 8:
+
+```text
+BF16:  644.0 ms
+AWQ:   659.9 ms
+```
+
+At concurrency 16:
+
+```text
+BF16: 1184.0 ms
+AWQ:  1067.1 ms
+```
+
+Unlike TPOT, TTFT does not show a large or consistently proportional
+improvement.
+
+This is reasonable for a multimodal workload because first-token latency
+includes more than language-model decoding, such as:
+
+- image preprocessing
+- vision encoding
+- multimodal feature processing
+- prompt prefill
+- request scheduling
+
+Quantizing language-model weights therefore has a much stronger effect on
+steady-state decode latency than on every component of the first-token path.
+
+---
+
+#### 4. Lower TPOT Produces Substantially Lower End-to-End Latency
+
+Because every request generates 128 output tokens, improvements in TPOT
+accumulate across the entire response.
+
+At concurrency 1:
+
+```text
+BF16 E2E: 1293.3 ms
+AWQ E2E:   684.1 ms
+```
+
+At concurrency 8:
+
+```text
+BF16 E2E: 2262.0 ms
+AWQ E2E:  1460.9 ms
+```
+
+At concurrency 16:
+
+```text
+BF16 E2E: 3194.7 ms
+AWQ E2E:  2418.7 ms
+```
+
+AWQ therefore reduces mean end-to-end latency by approximately:
+
+- **47%** at concurrency 1
+- **35%** at concurrency 8
+- **24%** at concurrency 16
+
+---
+
+#### 5. Peak Process VRAM Does Not Show the Expected Large Reduction
+
+The measured peak GPU memory footprint remains near 18 GB for both BF16 and
+AWQ:
+
+```text
+BF16: approximately 18.1 GB
+AWQ:  approximately 18.0–18.2 GB
+```
+
+This does not imply that 4-bit model weights occupy the same amount of memory
+as BF16 weights.
+
+Both experiments run vLLM with:
+
+```text
+--gpu-memory-utilization 0.80
+```
+
+Under this configuration, the serving runtime manages a large GPU memory pool
+for model weights, KV cache, CUDA graphs, and runtime workspaces.
+
+As a result, peak process-level GPU memory is not a direct measurement of
+model-weight memory alone, and the fixed memory-utilization target can hide
+part of the weight-memory reduction in the final process footprint.
+
+A more targeted measurement would be required to isolate model-weight memory
+from KV-cache and serving-runtime allocations.
+
+---
+
+#### 6. Quantization Is Not Only a Memory Optimization in This Setup
+
+Before running the experiment, AWQ could reasonably be expected to primarily
+reduce model memory.
+
+However, on the RTX 3090 used in this project, AWQ also provides a substantial
+decode-speed improvement.
+
+The strongest evidence is the consistent TPOT reduction and resulting increase
+in aggregate output throughput.
+
+Therefore, for this specific model, backend, GPU, and workload, AWQ provides
+both:
+
+- improved serving throughput
+- lower end-to-end latency
+
+while preserving functional multimodal output in the initial smoke test.
+
+These results should not be generalized to all GPUs or quantization kernels,
+since quantization performance depends strongly on hardware and backend
+implementation.
+
+---
+
+### Key Findings
+
+1. **AWQ substantially improves output throughput.**
+
+   Output throughput increases by approximately 89% at concurrency 1, 55% at
+   concurrency 8, and 32% at concurrency 16.
+
+2. **The largest gain appears in decode latency.**
+
+   TPOT decreases by roughly 39–53% across the tested concurrency levels.
+
+3. **TTFT changes much less than TPOT.**
+
+   Quantization has a much stronger effect on autoregressive token generation
+   than on the complete first-token path.
+
+4. **Lower TPOT significantly reduces total response latency.**
+
+   Mean E2E latency decreases at all tested concurrency levels.
+
+5. **Peak process VRAM is not a direct proxy for model-weight memory.**
+
+   The fixed vLLM GPU memory utilization target causes the runtime to reserve a
+   large serving memory pool, masking much of the expected model-weight memory
+   difference in process-level VRAM measurements.
+
+6. **The AWQ checkpoint remains functional for multimodal inference.**
+
+   The quantized model successfully produced a correct image description in
+   the smoke test.
+
+7. **Quantization performance is hardware- and implementation-dependent.**
+
+   The results describe this specific Qwen2.5-VL-3B, vLLM, RTX 3090 setup and
+   should not be interpreted as a universal AWQ speedup.
+
+---
+
+### Reproducing the AWQ Benchmark
+
+Start the AWQ model:
+
+```bash
+vllm serve Qwen/Qwen2.5-VL-3B-Instruct-AWQ \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --max-model-len 4096 \
+    --gpu-memory-utilization 0.80 \
+    --limit-mm-per-prompt '{"image":1,"video":0}' \
+    --no-enable-prefix-caching
+```
+
+Run the multimodal smoke test:
+
+```bash
+python scripts/test_vllm_awq_vlm.py
+```
+
+Run the benchmark:
+
+```bash
+./scripts/run_vllm_awq_benchmark.sh
+```
+
+Aggregate the results:
+
+```bash
+python src/aggregate_awq_results.py
+```
+
+Generate the comparison figures:
+
+```bash
+python src/plot_quantization_comparison.py
+```
+
+Processed results are stored in:
+
+```text
+results/processed/vllm_awq_concurrency_final.csv
+```
+
+Figures are stored in:
+
+```text
+results/figures/quantization_comparison/
+```
+
+---
+
+### Day 5 Summary
+
+The AWQ experiment demonstrates that quantization changes more than model
+storage requirements.
+
+For Qwen2.5-VL-3B-Instruct served with vLLM on an RTX 3090, the official AWQ
+checkpoint substantially reduces decode latency and improves aggregate output
+throughput while maintaining functional multimodal inference.
+
+The strongest improvement appears in TPOT rather than TTFT, highlighting the
+importance of separating first-token latency from steady-state decode
+performance when evaluating quantized serving systems.
